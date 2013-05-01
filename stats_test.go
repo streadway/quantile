@@ -1,11 +1,17 @@
 package sensor
 
 import (
+	"math"
 	"math/rand"
 	"runtime"
 	"sort"
 	"testing"
+	"testing/quick"
 )
+
+// number of decimals of quantile and error to consider
+// to push into integer arithmatic
+const precision = 1000000
 
 func normDistSlice(size int, stddev, mean float64) []float64 {
 	res := make([]float64, 0, size)
@@ -17,8 +23,8 @@ func normDistSlice(size int, stddev, mean float64) []float64 {
 
 type item struct {
 	v     float64
-	rank  int
-	delta int
+	rank  float64
+	delta float64
 	next  *item
 }
 
@@ -29,15 +35,14 @@ type Estimate struct {
 
 type target struct {
 	q  float64 // from Estimate
-	e  float64 // from Estimate
-	f1 float64 // cached coefficient q*n <= rank <= n
-	f2 float64 // cached coefficient 0 <= rank <= q*n
+	f1 float64 // cached coefficient for fi  q*n <= rank <= n
+	f2 float64 // cached coefficient for fii 0 <= rank <= q*n
 }
 
 type quantileEstimator struct {
 	head         *item
 	items        int
-	observations int
+	observations float64
 
 	targets []target
 	buffer  []float64
@@ -49,28 +54,27 @@ func newBiasedQuantileEstimator(quantiles ...Estimate) *quantileEstimator {
 	for _, est := range quantiles {
 		targets = append(targets, target{
 			q:  est.Quantile,
-			e:  est.Error,
-			f1: 2 * est.Error / (1 - est.Quantile),
-			f2: 2 * est.Error / est.Quantile,
+			f1: 2 * est.Error / est.Quantile,
+			f2: 2 * est.Error / (1 - est.Quantile),
 		})
 	}
 	return &quantileEstimator{
 		targets: targets,
 		buffer:  make([]float64, 0, 512),
-		pool:    make(chan *item, 4096),
+		pool:    make(chan *item, 1024),
 	}
 }
 
-func (est *quantileEstimator) minError(rank int, n int) int {
-	min := float64(n + 1)
+func (est *quantileEstimator) invariant(rank float64, n float64) float64 {
+	min := (n + 1)
 
 	for _, t := range est.targets {
 		var err float64
 
-		if rank < int(t.q*float64(n)) {
-			err = t.f2 * float64(n-rank)
+		if rank <= math.Floor(t.q*n) {
+			err = t.f2 * (n - rank)
 		} else {
-			err = t.f1 * float64(rank)
+			err = t.f1 * rank
 		}
 
 		if err < min {
@@ -78,14 +82,14 @@ func (est *quantileEstimator) minError(rank int, n int) int {
 		}
 	}
 
-	return int(min)
+	return math.Floor(min)
 }
 
-func (est *quantileEstimator) observe(v float64, rank, delta int, next *item) *item {
-	//return est.observeAlloc(v, rank, delta, next)
+func (est *quantileEstimator) observe(v float64, rank, delta float64, next *item) *item {
 	est.observations++
 	est.items++
 
+	// reuse or allocate
 	select {
 	case old := <-est.pool:
 		old.v = v
@@ -101,10 +105,11 @@ func (est *quantileEstimator) observe(v float64, rank, delta int, next *item) *i
 			next:  next,
 		}
 	}
+
 	panic("unreachable")
 }
 
-func (est *quantileEstimator) reuse(old *item) {
+func (est *quantileEstimator) recycle(old *item) {
 	est.items--
 	select {
 	case est.pool <- old:
@@ -112,28 +117,16 @@ func (est *quantileEstimator) reuse(old *item) {
 	}
 }
 
-func (est *quantileEstimator) observeAlloc(v float64, rank, delta int, next *item) *item {
-	est.observations++
-	est.items++
-
-	return &item{
-		v:     v,
-		rank:  rank,
-		delta: delta,
-		next:  next,
-	}
-}
-
 // merges the batch
 func (est *quantileEstimator) update(batch []float64) {
-	// initial case
+	// initial data
 	if est.head == nil {
 		est.head = est.observe(batch[0], 1, 0, nil)
 		batch = batch[1:]
 	}
 
+	rank := 0.0
 	cur := est.head
-	rank := 0
 	for _, v := range batch {
 		// min
 		if v < est.head.v {
@@ -142,7 +135,7 @@ func (est *quantileEstimator) update(batch []float64) {
 			continue
 		}
 
-		// cursor (possibility to fuse compress here)
+		// cursor
 		for cur.next != nil && cur.next.v < v {
 			rank += cur.rank
 			cur = cur.next
@@ -154,7 +147,27 @@ func (est *quantileEstimator) update(batch []float64) {
 			continue
 		}
 
-		cur.next = est.observe(v, 1, est.minError(rank, est.observations)-1, cur.next)
+		cur.next = est.observe(v, 1, est.invariant(rank, est.observations)-1, cur.next)
+	}
+}
+
+func (est *quantileEstimator) compress() {
+	rank := 0.0
+	cur := est.head
+	for cur != nil && cur.next != nil {
+		if cur.rank+cur.next.rank+cur.next.delta <= est.invariant(rank, est.observations) {
+			// merge with previous/head
+			removed := cur.next
+
+			cur.v = removed.v
+			cur.rank += removed.rank
+			cur.delta = removed.delta
+			cur.next = removed.next
+
+			est.recycle(removed)
+		}
+		rank += cur.rank
+		cur = cur.next
 	}
 }
 
@@ -172,26 +185,6 @@ func (est *quantileEstimator) Update(s float64) {
 	}
 }
 
-func (est *quantileEstimator) compress() {
-	rank := 0
-	cur := est.head
-	for cur != nil && cur.next != nil {
-		if cur.rank+cur.next.rank+cur.next.delta <= est.minError(rank, est.observations) {
-			// merge with previous/head
-			removed := cur.next
-
-			cur.v = removed.v
-			cur.rank += removed.rank
-			cur.delta = removed.delta
-			cur.next = removed.next
-
-			est.reuse(removed)
-		}
-		rank += cur.rank
-		cur = cur.next
-	}
-}
-
 func (est *quantileEstimator) Query(q float64) float64 {
 	est.flush()
 
@@ -200,15 +193,15 @@ func (est *quantileEstimator) Query(q float64) float64 {
 		return 0
 	}
 
-	quantile := int(q * float64(est.observations))
-	maxrank := quantile + est.minError(quantile, est.observations)/2
-	rank := 0
+	midrank := math.Floor(q * est.observations)
+	maxrank := midrank + math.Floor(est.invariant(midrank, est.observations)/2)
 
+	rank := 0.0
 	for cur.next != nil {
+		rank += cur.rank
 		if rank+cur.next.rank+cur.next.delta > maxrank {
 			return cur.v
 		}
-		rank += cur.rank
 		cur = cur.next
 	}
 	return cur.v
@@ -216,6 +209,48 @@ func (est *quantileEstimator) Query(q float64) float64 {
 
 func TestQE(t *testing.T) {
 	BenchmarkQuantileEstimator(&testing.B{N: 100000})
+}
+
+func TestErrorBounds(t *testing.T) {
+	f := func(N uint32) bool {
+		q := 0.99
+		e := 0.0001
+		n := int(N) % 1000000
+		est := newBiasedQuantileEstimator(Estimate{q, e})
+		obs := make([]float64, 0, n)
+
+		for i := 0; i < n; i++ {
+			s := rand.NormFloat64()*1.0 + 0.0
+			obs = append(obs, s)
+			est.Update(s)
+		}
+
+		sort.Float64Slice(obs).Sort()
+
+		estimate := est.Query(q)
+
+		delta := (int(float64(n)*e) + 1) * 2
+		exact := int(float64(n) * q)
+
+		min := obs[0]
+		if exact-delta > 0 {
+			min = obs[exact-delta]
+		}
+
+		max := obs[len(obs)-1]
+		if exact+delta < len(obs) {
+			max = obs[exact+delta]
+		}
+
+		t.Logf("delta: %d ex: %f min: %f (%f) max: %f (%f) est: %f n: %d l: %d",
+			delta, obs[exact], min, obs[0], max, obs[len(obs)-1], estimate, n, est.items)
+
+		return (min <= estimate && estimate <= max)
+	}
+
+	if err := quick.Check(f, nil); err != nil {
+		t.Error(err)
+	}
 }
 
 func BenchmarkQuantileEstimator(b *testing.B) {
