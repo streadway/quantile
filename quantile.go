@@ -48,9 +48,8 @@ type target struct {
 func (t target) Delta(rank, observations float64) float64 {
 	if rank <= math.Floor(t.q*observations) {
 		return t.f2 * (observations - rank)
-	} else {
-		return t.f1 * rank
 	}
+	return t.f1 * rank
 }
 
 // Target produces a optimal invariant function when the desired quantile is
