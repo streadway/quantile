@@ -14,7 +14,7 @@ import (
 
 func withinError(t *testing.T, fn Invariant, q, e float64) func(N uint32) bool {
 	return func(N uint32) bool {
-		n := int(N) % 1000000 + 1
+		n := int(N % 1000000) + 1
 		est := New(fn)
 		obs := make([]float64, 0, n)
 
