@@ -1,3 +1,7 @@
+// Copyright 2013 Sean Treadway, SoundCloud Ltd. All rights reserved.  Use of
+// this source code is governed by a BSD-style license that can be found in the
+// LICENSE file.
+
 /*
 Package quantile implements Streaming Quantile Estimator. The implementation is
 based on "Effective Computation of Biased Quantiles over Data Streams"
