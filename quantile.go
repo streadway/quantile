@@ -3,10 +3,10 @@
 // LICENSE file.
 
 /*
-Package quantile implements Streaming Quantile Estimator. The implementation is
-based on "Effective Computation of Biased Quantiles over Data Streams"
+Package quantile implements a streaming quantile estimator. The implementation
+is based on "Effective Computation of Biased Quantiles over Data Streams"
 (Cormode, Korn, Muthukrishnan, Srivastava) to provide a space and time
-efficient estimator for streaming quantile estimation.
+efficient estimator for online quantile estimation.
 
 For the normal distribution of 10^9 elements, a tolerance for 0.99th percentile
 at 0.001 uses under 1000 bins at 32 bytes per bin.
