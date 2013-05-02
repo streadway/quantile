@@ -9,18 +9,6 @@ import (
 	"testing/quick"
 )
 
-// number of decimals of quantile and error to consider
-// to push into integer arithmatic
-const precision = 1000000
-
-func normDistSlice(size int, stddev, mean float64) []float64 {
-	res := make([]float64, 0, size)
-	for i := 0; i < size; i++ {
-		res = append(res, rand.NormFloat64()*stddev+mean)
-	}
-	return res
-}
-
 type item struct {
 	v     float64
 	rank  float64
@@ -40,8 +28,11 @@ type target struct {
 }
 
 type quantileEstimator struct {
-	head         *item
-	items        int
+	// linked list datastructure, bookeeping in observe/recycle
+	head  *item
+	items int
+
+	// avoids conversion during invariant checks
 	observations float64
 
 	targets []target
@@ -58,6 +49,7 @@ func newBiasedQuantileEstimator(quantiles ...Estimate) *quantileEstimator {
 			f2: 2 * est.Error / (1 - est.Quantile),
 		})
 	}
+
 	return &quantileEstimator{
 		targets: targets,
 		buffer:  make([]float64, 0, 512),
@@ -65,6 +57,7 @@ func newBiasedQuantileEstimator(quantiles ...Estimate) *quantileEstimator {
 	}
 }
 
+// targetted
 func (est *quantileEstimator) invariant(rank float64, n float64) float64 {
 	min := (n + 1)
 
@@ -207,10 +200,6 @@ func (est *quantileEstimator) Query(q float64) float64 {
 	return cur.v
 }
 
-func TestQE(t *testing.T) {
-	BenchmarkQuantileEstimator(&testing.B{N: 100000})
-}
-
 func TestErrorBounds(t *testing.T) {
 	f := func(N uint32) bool {
 		q := 0.99
@@ -227,25 +216,39 @@ func TestErrorBounds(t *testing.T) {
 
 		sort.Float64Slice(obs).Sort()
 
+		// "v" the estimate
 		estimate := est.Query(q)
 
-		delta := (int(float64(n)*e) + 1) * 2
-		exact := int(float64(n) * q)
+		// A[⌈(φ − ε)n⌉] ≤ v ≤ A[⌈(φ + ε)n⌉]
+		// The bounds of the estimate
+		lower := int((q-e)*float64(n)) - 1
+		upper := int((q+e)*float64(n)) + 1
+
+		// actual v
+		exact := int(q * float64(n))
 
 		min := obs[0]
-		if exact-delta > 0 {
-			min = obs[exact-delta]
+		if lower > 0 {
+			min = obs[lower]
 		}
 
 		max := obs[len(obs)-1]
-		if exact+delta < len(obs) {
-			max = obs[exact+delta]
+		if upper < len(obs) {
+			max = obs[upper]
 		}
 
 		t.Logf("delta: %d ex: %f min: %f (%f) max: %f (%f) est: %f n: %d l: %d",
-			delta, obs[exact], min, obs[0], max, obs[len(obs)-1], estimate, n, est.items)
+			upper-lower, obs[exact], min, obs[0], max, obs[len(obs)-1], estimate, n, est.items)
 
-		return (min <= estimate && estimate <= max)
+		fits := (min <= estimate && estimate <= max)
+
+		if !fits {
+			for cur := est.head; cur != nil; cur = cur.next {
+				t.Log(cur)
+			}
+		}
+
+		return fits
 	}
 
 	if err := quick.Check(f, nil); err != nil {
@@ -255,15 +258,13 @@ func TestErrorBounds(t *testing.T) {
 
 func BenchmarkQuantileEstimator(b *testing.B) {
 	est := newBiasedQuantileEstimator(Estimate{0.01, 0.001}, Estimate{0.05, 0.01}, Estimate{0.50, 0.01}, Estimate{0.99, 0.001})
-	b.StopTimer()
 
+	// Warmup
+	b.StopTimer()
 	for i := 0; i < 10000; i++ {
 		est.Update(rand.NormFloat64()*1.0 + 0.0)
 	}
-
 	b.StartTimer()
-
-	println(b.N)
 
 	var pre runtime.MemStats
 	runtime.ReadMemStats(&pre)
@@ -271,13 +272,9 @@ func BenchmarkQuantileEstimator(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		est.Update(rand.NormFloat64()*1.0 + 0.0)
 	}
+
 	var post runtime.MemStats
 	runtime.ReadMemStats(&post)
 
-	println("alloc:", post.TotalAlloc-pre.TotalAlloc)
-
-	println(est.items)
-	println(est.Query(0.01))
-	println(est.Query(0.50))
-	println(est.Query(0.99))
+	b.Logf("allocs: %d items: %d 0.01: %f 0.50: %f 0.99: %f", post.TotalAlloc-pre.TotalAlloc, est.items, est.Query(0.01), est.Query(0.50), est.Query(0.99))
 }
