@@ -8,12 +8,10 @@ import (
 	"testing/quick"
 )
 
-func TestErrorBounds(t *testing.T) {
-	f := func(N uint32) bool {
-		q := 0.99
-		e := 0.0001
+func withinError(t *testing.T, fn Invariant, q, e float64) func(N uint32) bool {
+	return func(N uint32) bool {
 		n := int(N) % 1000000
-		est := New(Target(q, e))
+		est := New(fn)
 		obs := make([]float64, 0, n)
 
 		for i := 0; i < n; i++ {
@@ -58,8 +56,16 @@ func TestErrorBounds(t *testing.T) {
 
 		return fits
 	}
+}
 
-	if err := quick.Check(f, nil); err != nil {
+func TestErrorTargetd(t *testing.T) {
+	if err := quick.Check(withinError(t, Target(0.99, 0.0001), 0.99, 0.0001), nil); err != nil {
+		t.Error(err)
+	}
+}
+
+func TestErrorBiased(t *testing.T) {
+	if err := quick.Check(withinError(t, Bias(0.0001), 0.99, 0.0001), nil); err != nil {
 		t.Error(err)
 	}
 }
