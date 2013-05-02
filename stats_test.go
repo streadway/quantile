@@ -9,6 +9,53 @@ import (
 	"testing/quick"
 )
 
+type Invariant interface {
+	// Delta calculates the acceptable difference in ranks between two values.
+	// It is used to remove redundant values during compression.
+	Delta(rank, observations float64) float64
+}
+
+type bias struct {
+	tolerance float64
+}
+
+func (b bias) Delta(rank, observations float64) float64 {
+	return 2 * b.tolerance * rank
+}
+
+// Bias constructs an invariant function that tolerates a difference in rank
+// for all quantile queries.  It uses more space than the Target invariant, so
+// should be used if you do not know your quantiles ahead of time.
+func Bias(tolerance float64) Invariant {
+	return bias{tolerance: tolerance}
+}
+
+type target struct {
+	q  float64 // targeted quantile
+	f1 float64 // cached coefficient for fi  q*n <= rank <= n
+	f2 float64 // cached coefficient for fii 0 <= rank <= q*n
+}
+
+func (t target) Delta(rank, observations float64) float64 {
+	if rank <= math.Floor(t.q*observations) {
+		return t.f2 * (observations - rank)
+	} else {
+		return t.f1 * rank
+	}
+}
+
+// Target produces a optimal invariant function when the desired quantile is
+// and error tolerance is known ahead of time.  When you know which quantiles
+// you wish to query, use this function to reduce the required space.
+func Target(quantile, tolerance float64) Invariant {
+	return target{
+		q:  quantile,
+		f1: 2 * tolerance / quantile,
+		f2: 2 * tolerance / (1 - quantile),
+	}
+}
+
+// the tuple and list element
 type item struct {
 	v     float64
 	rank  float64
@@ -16,69 +63,92 @@ type item struct {
 	next  *item
 }
 
-type Estimate struct {
-	Quantile float64 // phi like 0.50 (mean) or 0.99th
-	Error    float64 // epsilon like 0.1 or 0.001
-}
-
-type target struct {
-	q  float64 // from Estimate
-	f1 float64 // cached coefficient for fi  q*n <= rank <= n
-	f2 float64 // cached coefficient for fii 0 <= rank <= q*n
-}
-
-type quantileEstimator struct {
-	// linked list datastructure, bookeeping in observe/recycle
+type Estimator struct {
+	// linked list data structure "S", bookeeping in observe/recycle
 	head  *item
 	items int
 
-	// avoids conversion during invariant checks
+	// float64 avoids conversion during invariant checks
 	observations float64
 
-	targets []target
-	buffer  []float64
-	pool    chan *item
+	// used to calculate ƒ(r,n)
+	invariants []Invariant
+
+	// batching of updates
+	buffer []float64
+
+	// free list
+	pool chan *item
 }
 
-func newBiasedQuantileEstimator(quantiles ...Estimate) *quantileEstimator {
-	targets := make([]target, 0, len(quantiles))
-	for _, est := range quantiles {
-		targets = append(targets, target{
-			q:  est.Quantile,
-			f1: 2 * est.Error / est.Quantile,
-			f2: 2 * est.Error / (1 - est.Quantile),
-		})
-	}
-
-	return &quantileEstimator{
-		targets: targets,
-		buffer:  make([]float64, 0, 512),
-		pool:    make(chan *item, 1024),
+// New allocates a new estimator tolerating the minimum of the invariants provided.
+//
+// When you know how much error you can tolerate in the quantiles you will
+// query, use a Target invariant for each quantile you will query.  For
+// example:
+//
+//    quantile.New(Target(0.50, 0.01), Target(0.95, 0.001), Target(0.99, 0.0005))
+//
+// When you will query for multiple different quantiles, and know the error
+// tolerance, use the Bias invariant.  For example:
+//
+//    quantile.New(Bias(0.01))
+//
+// Targeted estimators consume significantly less resources than Biased estimators.
+//
+// Estimators are not safe to use from multiple goroutines.
+func New(invariants ...Invariant) *Estimator {
+	return &Estimator{
+		invariants: invariants,
+		buffer:     make([]float64, 0, 512),
+		pool:       make(chan *item, 1024),
 	}
 }
 
-// targetted
-func (est *quantileEstimator) invariant(rank float64, n float64) float64 {
+// Update buffers a new sample, committing and compressing the data structure
+// when the buffer is full.
+func (est *Estimator) Update(s float64) {
+	est.buffer = append(est.buffer, s)
+	if len(est.buffer) == cap(est.buffer) {
+		est.flush()
+	}
+}
+
+// Query finds a value within (quantile - tolerance) * n <= value <= (quantile + tolerance) * n
+func (est *Estimator) Query(q float64) float64 {
+	est.flush()
+
+	cur := est.head
+	if cur == nil {
+		return 0
+	}
+
+	midrank := math.Floor(q * est.observations)
+	maxrank := midrank + math.Floor(est.invariant(midrank, est.observations)/2)
+
+	rank := 0.0
+	for cur.next != nil {
+		rank += cur.rank
+		if rank+cur.next.rank+cur.next.delta > maxrank {
+			return cur.v
+		}
+		cur = cur.next
+	}
+	return cur.v
+}
+
+// ƒ(r,n) = minⁱ(ƒⁱ(r,n))
+func (est *Estimator) invariant(rank float64, n float64) float64 {
 	min := (n + 1)
-
-	for _, t := range est.targets {
-		var err float64
-
-		if rank <= math.Floor(t.q*n) {
-			err = t.f2 * (n - rank)
-		} else {
-			err = t.f1 * rank
-		}
-
-		if err < min {
-			min = err
+	for _, f := range est.invariants {
+		if delta := f.Delta(rank, n); delta < min {
+			min = delta
 		}
 	}
-
 	return math.Floor(min)
 }
 
-func (est *quantileEstimator) observe(v float64, rank, delta float64, next *item) *item {
+func (est *Estimator) observe(v float64, rank, delta float64, next *item) *item {
 	est.observations++
 	est.items++
 
@@ -102,7 +172,7 @@ func (est *quantileEstimator) observe(v float64, rank, delta float64, next *item
 	panic("unreachable")
 }
 
-func (est *quantileEstimator) recycle(old *item) {
+func (est *Estimator) recycle(old *item) {
 	est.items--
 	select {
 	case est.pool <- old:
@@ -111,7 +181,7 @@ func (est *quantileEstimator) recycle(old *item) {
 }
 
 // merges the batch
-func (est *quantileEstimator) update(batch []float64) {
+func (est *Estimator) update(batch []float64) {
 	// initial data
 	if est.head == nil {
 		est.head = est.observe(batch[0], 1, 0, nil)
@@ -144,7 +214,7 @@ func (est *quantileEstimator) update(batch []float64) {
 	}
 }
 
-func (est *quantileEstimator) compress() {
+func (est *Estimator) compress() {
 	rank := 0.0
 	cur := est.head
 	for cur != nil && cur.next != nil {
@@ -164,40 +234,11 @@ func (est *quantileEstimator) compress() {
 	}
 }
 
-func (est *quantileEstimator) flush() {
+func (est *Estimator) flush() {
 	sort.Float64Slice(est.buffer).Sort()
 	est.update(est.buffer)
 	est.buffer = est.buffer[0:0]
 	est.compress()
-}
-
-func (est *quantileEstimator) Update(s float64) {
-	est.buffer = append(est.buffer, s)
-	if len(est.buffer) == cap(est.buffer) {
-		est.flush()
-	}
-}
-
-func (est *quantileEstimator) Query(q float64) float64 {
-	est.flush()
-
-	cur := est.head
-	if cur == nil {
-		return 0
-	}
-
-	midrank := math.Floor(q * est.observations)
-	maxrank := midrank + math.Floor(est.invariant(midrank, est.observations)/2)
-
-	rank := 0.0
-	for cur.next != nil {
-		rank += cur.rank
-		if rank+cur.next.rank+cur.next.delta > maxrank {
-			return cur.v
-		}
-		cur = cur.next
-	}
-	return cur.v
 }
 
 func TestErrorBounds(t *testing.T) {
@@ -205,7 +246,7 @@ func TestErrorBounds(t *testing.T) {
 		q := 0.99
 		e := 0.0001
 		n := int(N) % 1000000
-		est := newBiasedQuantileEstimator(Estimate{q, e})
+		est := New(Target(q, e))
 		obs := make([]float64, 0, n)
 
 		for i := 0; i < n; i++ {
@@ -257,7 +298,7 @@ func TestErrorBounds(t *testing.T) {
 }
 
 func BenchmarkQuantileEstimator(b *testing.B) {
-	est := newBiasedQuantileEstimator(Estimate{0.01, 0.001}, Estimate{0.05, 0.01}, Estimate{0.50, 0.01}, Estimate{0.99, 0.001})
+	est := New(Target(0.01, 0.001), Target(0.05, 0.01), Target(0.50, 0.01), Target(0.99, 0.001))
 
 	// Warmup
 	b.StopTimer()
