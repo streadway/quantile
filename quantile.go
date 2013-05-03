@@ -18,7 +18,7 @@ import (
 	"sort"
 )
 
-type Invariant interface {
+type Estimate interface {
 	// Delta calculates the acceptable difference in ranks between two values.
 	// It is used to remove redundant values during compression.
 	Delta(rank, observations float64) float64
@@ -32,10 +32,13 @@ func (b bias) Delta(rank, observations float64) float64 {
 	return 2 * b.tolerance * rank
 }
 
-// Bias constructs an invariant function that tolerates a difference in rank
-// for all quantile queries.  It uses more space than the Target invariant, so
-// should be used if you do not know your quantiles ahead of time.
-func Bias(tolerance float64) Invariant {
+// Unknown produces estimations for all possible quantiles at this error tolerance.
+// It uses significantly more space and time than when you know the quantiles
+// you wish to estimate.
+//
+// The Known estimation should be used when you know which quantiles you will be
+// querying.
+func Unknown(tolerance float64) Estimate {
 	return bias{tolerance: tolerance}
 }
 
@@ -52,10 +55,10 @@ func (t target) Delta(rank, observations float64) float64 {
 	return t.f1 * rank
 }
 
-// Target produces a optimal invariant function when the desired quantile is
-// and error tolerance is known ahead of time.  When you know which quantiles
-// you wish to query, use this function to reduce the required space.
-func Target(quantile, tolerance float64) Invariant {
+// Known produces a optimal space usage for estimations at the given quantile and error tolerance.
+//
+// Quantiles not known ahead of time can also be queried, but at a lower accuracy.
+func Known(quantile, tolerance float64) Estimate {
 	return target{
 		q:  quantile,
 		f1: 2 * tolerance / quantile,
@@ -80,7 +83,7 @@ type Estimator struct {
 	observations float64
 
 	// used to calculate ƒ(r,n)
-	invariants []Invariant
+	invariants []Estimate
 
 	// batching of updates
 	buffer []float64
@@ -92,20 +95,20 @@ type Estimator struct {
 // New allocates a new estimator tolerating the minimum of the invariants provided.
 //
 // When you know how much error you can tolerate in the quantiles you will
-// query, use a Target invariant for each quantile you will query.  For
+// query, use a Known estimation for each quantile you will query.  For
 // example:
 //
-//    quantile.New(Target(0.50, 0.01), Target(0.95, 0.001), Target(0.99, 0.0005))
+//    quantile.New(quantile.Known(0.50, 0.01), quantile.Known(0.95, 0.001), quantile.Known(0.99, 0.0005))
 //
 // When you will query for multiple different quantiles, and know the error
 // tolerance, use the Bias invariant.  For example:
 //
-//    quantile.New(Bias(0.01))
+//    quantile.New(quantile.Unknown(0.01))
 //
 // Targeted estimators consume significantly less resources than Biased estimators.
 //
 // Estimators are not safe to use from multiple goroutines.
-func New(invariants ...Invariant) *Estimator {
+func New(invariants ...Estimate) *Estimator {
 	return &Estimator{
 		invariants: invariants,
 		buffer:     make([]float64, 0, 512),
@@ -113,17 +116,17 @@ func New(invariants ...Invariant) *Estimator {
 	}
 }
 
-// Update buffers a new sample, committing and compressing the data structure
+// Add buffers a new sample, committing and compressing the data structure
 // when the buffer is full.
-func (est *Estimator) Update(s float64) {
-	est.buffer = append(est.buffer, s)
+func (est *Estimator) Add(value float64) {
+	est.buffer = append(est.buffer, value)
 	if len(est.buffer) == cap(est.buffer) {
 		est.flush()
 	}
 }
 
-// Query finds a value within (quantile - tolerance) * n <= value <= (quantile + tolerance) * n
-func (est *Estimator) Query(q float64) float64 {
+// Get finds a value within (quantile - tolerance) * n <= value <= (quantile + tolerance) * n
+func (est *Estimator) Get(quantile float64) float64 {
 	est.flush()
 
 	cur := est.head
@@ -131,7 +134,7 @@ func (est *Estimator) Query(q float64) float64 {
 		return 0
 	}
 
-	midrank := math.Floor(q * est.observations)
+	midrank := math.Floor(quantile * est.observations)
 	maxrank := midrank + math.Floor(est.invariant(midrank, est.observations)/2)
 
 	rank := 0.0

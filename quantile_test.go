@@ -12,7 +12,7 @@ import (
 	"testing/quick"
 )
 
-func withinError(t *testing.T, fn Invariant, q, e float64) func(N uint32) bool {
+func withinError(t *testing.T, fn Estimate, q, e float64) func(N uint32) bool {
 	return func(N uint32) bool {
 		n := int(N % 1000000) + 1
 		est := New(fn)
@@ -21,13 +21,13 @@ func withinError(t *testing.T, fn Invariant, q, e float64) func(N uint32) bool {
 		for i := 0; i < n; i++ {
 			s := rand.NormFloat64()*1.0 + 0.0
 			obs = append(obs, s)
-			est.Update(s)
+			est.Add(s)
 		}
 
 		sort.Float64Slice(obs).Sort()
 
 		// "v" the estimate
-		estimate := est.Query(q)
+		estimate := est.Get(q)
 
 		// A[⌈(φ − ε)n⌉] ≤ v ≤ A[⌈(φ + ε)n⌉]
 		// The bounds of the estimate
@@ -62,25 +62,25 @@ func withinError(t *testing.T, fn Invariant, q, e float64) func(N uint32) bool {
 	}
 }
 
-func TestErrorTargetd(t *testing.T) {
-	if err := quick.Check(withinError(t, Target(0.99, 0.0001), 0.99, 0.0001), nil); err != nil {
+func TestErrorKnownd(t *testing.T) {
+	if err := quick.Check(withinError(t, Known(0.99, 0.0001), 0.99, 0.0001), nil); err != nil {
 		t.Error(err)
 	}
 }
 
-func TestErrorBiased(t *testing.T) {
-	if err := quick.Check(withinError(t, Bias(0.0001), 0.99, 0.0001), nil); err != nil {
+func TestErrorUnknowned(t *testing.T) {
+	if err := quick.Check(withinError(t, Unknown(0.0001), 0.99, 0.0001), nil); err != nil {
 		t.Error(err)
 	}
 }
 
 func BenchmarkQuantileEstimator(b *testing.B) {
-	est := New(Target(0.01, 0.001), Target(0.05, 0.01), Target(0.50, 0.01), Target(0.99, 0.001))
+	est := New(Known(0.01, 0.001), Known(0.05, 0.01), Known(0.50, 0.01), Known(0.99, 0.001))
 
 	// Warmup
 	b.StopTimer()
 	for i := 0; i < 10000; i++ {
-		est.Update(rand.NormFloat64()*1.0 + 0.0)
+		est.Add(rand.NormFloat64()*1.0 + 0.0)
 	}
 	b.StartTimer()
 
@@ -88,11 +88,11 @@ func BenchmarkQuantileEstimator(b *testing.B) {
 	runtime.ReadMemStats(&pre)
 
 	for i := 0; i < b.N; i++ {
-		est.Update(rand.NormFloat64()*1.0 + 0.0)
+		est.Add(rand.NormFloat64()*1.0 + 0.0)
 	}
 
 	var post runtime.MemStats
 	runtime.ReadMemStats(&post)
 
-	b.Logf("allocs: %d items: %d 0.01: %f 0.50: %f 0.99: %f", post.TotalAlloc-pre.TotalAlloc, est.items, est.Query(0.01), est.Query(0.50), est.Query(0.99))
+	b.Logf("allocs: %d items: %d 0.01: %f 0.50: %f 0.99: %f", post.TotalAlloc-pre.TotalAlloc, est.items, est.Get(0.01), est.Get(0.50), est.Get(0.99))
 }
