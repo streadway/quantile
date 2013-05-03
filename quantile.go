@@ -251,5 +251,3 @@ func (est *Estimator) flush() {
 	est.buffer = est.buffer[0:0]
 	est.compress()
 }
-
-

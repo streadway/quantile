@@ -15,14 +15,14 @@ func observeSeconds(est *quantile.Estimator, begin time.Time) {
 func Work() {
 	defer observeSeconds(rpcs, time.Now())
 
-	// Dance your cares away, 
-	// Worry's for another day. 
-	// Let the music play, 
+	// Dance your cares away,
+	// Worry's for another day.
+	// Let the music play,
 }
 
 func ExampleEstimator() {
 	// We know we want to query the 95th and 99th, with the 95th a little less accurately.
-	rpcs = quantile.New(quantile.Known(0.95, 0.005),quantile.Known(0.99, 0.001))
+	rpcs = quantile.New(quantile.Known(0.95, 0.005), quantile.Known(0.99, 0.001))
 
 	Work()
 	Work()
