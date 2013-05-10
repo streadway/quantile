@@ -107,8 +107,16 @@ type Estimator struct {
 //
 // Targeted estimators consume significantly less resources than Biased estimators.
 //
+// Passing no parameters will create an estimator that has a tolerance of 0.1, equivalent to:
+//
+//   quantile.New(quantile.Unknown(0.1))
+//
 // Estimators are not safe to use from multiple goroutines.
 func New(invariants ...Estimate) *Estimator {
+	if len(invariants) == 0 {
+		invariants = append(invariants, Unknown(0.1))
+	}
+
 	return &Estimator{
 		invariants: invariants,
 		buffer:     make([]float64, 0, 512),
