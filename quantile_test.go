@@ -14,7 +14,7 @@ import (
 
 func withinError(t *testing.T, fn Estimate, q, e float64) func(N uint32) bool {
 	return func(N uint32) bool {
-		n := int(N%1000000) + 1
+		n := int(N % 1000000)
 		est := New(fn)
 		obs := make([]float64, 0, n)
 
@@ -24,10 +24,17 @@ func withinError(t *testing.T, fn Estimate, q, e float64) func(N uint32) bool {
 			est.Add(s)
 		}
 
+		if est.Samples() != n {
+			return false
+		}
+
 		sort.Float64Slice(obs).Sort()
 
 		// "v" the estimate
 		estimate := est.Get(q)
+		if n == 0 {
+			return estimate == 0
+		}
 
 		// A[⌈(φ − ε)n⌉] ≤ v ≤ A[⌈(φ + ε)n⌉]
 		// The bounds of the estimate
@@ -95,4 +102,16 @@ func BenchmarkQuantileEstimator(b *testing.B) {
 	runtime.ReadMemStats(&post)
 
 	b.Logf("allocs: %d items: %d 0.01: %f 0.50: %f 0.99: %f", post.TotalAlloc-pre.TotalAlloc, est.items, est.Get(0.01), est.Get(0.50), est.Get(0.99))
+}
+
+func TestQueryEmptyStreamShouldNotPanic(t *testing.T) {
+	est := New(Known(0.99, 0.0001))
+	if val := est.Get(0.99); val != 0 {
+		t.Fatalf("expected 0, got %f", val)
+	}
+
+	est = New(Unknown(0.0001))
+	if val := est.Get(0.99); val != 0 {
+		t.Fatalf("expected 0, got %f", val)
+	}
 }
