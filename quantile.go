@@ -92,6 +92,8 @@ type Estimator struct {
 	pool chan *item
 }
 
+var defaultInvariants = []Estimate{Unknown(0.1)}
+
 // New allocates a new estimator tolerating the minimum of the invariants provided.
 //
 // When you know how much error you can tolerate in the quantiles you will
@@ -114,7 +116,7 @@ type Estimator struct {
 // Estimators are not safe to use from multiple goroutines.
 func New(invariants ...Estimate) *Estimator {
 	if len(invariants) == 0 {
-		invariants = append(invariants, Unknown(0.1))
+		invariants = defaultInvariants
 	}
 
 	return &Estimator{
@@ -134,7 +136,12 @@ func (est *Estimator) Add(value float64) {
 }
 
 // Get finds a value within (quantile - tolerance) * n <= value <= (quantile + tolerance) * n
+// or 0 if no values have been observed.
 func (est *Estimator) Get(quantile float64) float64 {
+	if est.observations == 0 {
+		return 0
+	}
+
 	est.flush()
 
 	cur := est.head
@@ -154,6 +161,11 @@ func (est *Estimator) Get(quantile float64) float64 {
 		cur = cur.next
 	}
 	return cur.v
+}
+
+// Samples returns the number of values this estimator has sampled.
+func (est *Estimator) Samples() int {
+	return int(est.observations) + len(est.buffer)
 }
 
 // ƒ(r,n) = minⁱ(ƒⁱ(r,n))
