@@ -138,7 +138,7 @@ func (est *Estimator) Add(value float64) {
 // Get finds a value within (quantile - tolerance) * n <= value <= (quantile + tolerance) * n
 // or 0 if no values have been observed.
 func (est *Estimator) Get(quantile float64) float64 {
-	if est.observations == 0 {
+	if est.observations == 0 && len(est.buffer) == 0 {
 		return 0
 	}
 

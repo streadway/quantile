@@ -115,3 +115,11 @@ func TestQueryEmptyStreamShouldNotPanic(t *testing.T) {
 		t.Fatalf("expected 0, got %f", val)
 	}
 }
+
+func TestQueryEarlyStreamWithDirtyBuffer(t *testing.T) {
+	est := New(Known(0.99, 0.0001))
+	est.Add(1)
+	if got, want := est.Get(0.99), 1.0; got != want {
+		t.Fatalf("got %f, want %f", got, want)
+	}
+}
