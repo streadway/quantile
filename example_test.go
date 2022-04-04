@@ -1,14 +1,13 @@
-package quantile_test
+package quantile
 
 import (
-	quantile "." // import fully qualified in your code
 	"fmt"
 	"time"
 )
 
-var rpcs *quantile.Estimator
+var rpcs *Estimator
 
-func observeSeconds(est *quantile.Estimator, begin time.Time) {
+func observeSeconds(est *Estimator, begin time.Time) {
 	est.Add(float64(time.Now().Sub(begin)) / float64(time.Second))
 }
 
@@ -22,7 +21,7 @@ func Work() {
 
 func ExampleEstimator() {
 	// We know we want to query the 95th and 99th, with the 95th a little less accurately.
-	rpcs = quantile.New(quantile.Known(0.95, 0.005), quantile.Known(0.99, 0.001))
+	rpcs = New(Known(0.95, 0.005), Known(0.99, 0.001))
 
 	Work()
 	Work()
