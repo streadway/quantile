@@ -3,6 +3,8 @@ package quantile
 import (
 	"fmt"
 	"time"
+
+	"github.com/koalacxr/quantile"
 )
 
 var rpcs *Estimator
