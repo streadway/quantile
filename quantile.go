@@ -100,29 +100,29 @@ var defaultInvariants = []Estimate{Unknown(0.1)}
 // query, use a Known estimation for each quantile you will query.  For
 // example:
 //
-//    quantile.New(quantile.Known(0.50, 0.01), quantile.Known(0.95, 0.001), quantile.Known(0.99, 0.0005))
+//	quantile.New(quantile.Known(0.50, 0.01), quantile.Known(0.95, 0.001), quantile.Known(0.99, 0.0005))
 //
 // When you will query for multiple different quantiles, and know the error
 // tolerance, use the Bias invariant.  For example:
 //
-//    quantile.New(quantile.Unknown(0.01))
+//	quantile.New(quantile.Unknown(0.01))
 //
 // Targeted estimators consume significantly less resources than Biased estimators.
 //
 // Passing no parameters will create an estimator that has a tolerance of 0.1, equivalent to:
 //
-//   quantile.New(quantile.Unknown(0.1))
+//	quantile.New(quantile.Unknown(0.1))
 //
 // Estimators are not safe to use from multiple goroutines.
-func New(invariants ...Estimate) *Estimator {
+func New(bufferSize uint64, poolSize uint64, invariants ...Estimate) *Estimator {
 	if len(invariants) == 0 {
 		invariants = defaultInvariants
 	}
 
 	return &Estimator{
 		invariants: invariants,
-		buffer:     make([]float64, 0, 512),
-		pool:       make(chan *item, 1024),
+		buffer:     make([]float64, 0, bufferSize),
+		pool:       make(chan *item, poolSize),
 	}
 }
 
